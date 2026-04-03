@@ -6,13 +6,15 @@ Electron wrapper for [Notion Calendar](https://calendar.notion.so): **minimize t
 
 **Tested environment:** **Ubuntu 24.04** with **KDE Plasma** (including correct window icon grouping via `StartupWMClass` in packaged builds). Other distros or desktops may work but have not been validated.
 
-## Fork
+## About
 
-This repo (**[opsmachine/notion-calendar](https://github.com/opsmachine/notion-calendar)**) is a **fork** of **[dusansimic/notion-calendar](https://github.com/dusansimic/notion-calendar)**. Thanks to the original author for the app baseline and MIT license.
+Unofficial Electron wrapper for [Notion Calendar](https://calendar.notion.so) on Linux. MIT — see [LICENSE](LICENSE).
 
-Upstream is a minimal Linux-friendly wrapper; this fork adds updated dependencies, stricter Electron defaults, tray behavior, and Linux-native notification actions.
+Originally by **[Dušan Simić](https://dusansimic.me)** ([dusansimic/notion-calendar](https://github.com/dusansimic/notion-calendar)). This codebase extends that baseline with updated dependencies, stricter Electron defaults, tray behavior, and Linux-native notification handling.
 
-## Features in this fork
+Related community work and packaging were also iterated in **[opsmachine/notion-calendar](https://github.com/opsmachine/notion-calendar)** (optional; not required to run or build this project).
+
+## Features
 
 - **Tray** — Closing the window **minimizes to the system tray** instead of quitting. Tray menu: show/hide, quit, developer tools. **Single-instance**: launching again focuses the existing window.
 - **Native notifications (Linux)** — Calendar alerts are **not** shown with Electron’s built-in `Notification` API. The main process runs **`notify-send`** (from **libnotify**) so notifications match your desktop environment (e.g. KDE), including **critical** urgency and **action buttons** where supported.
