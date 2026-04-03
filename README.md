@@ -1,4 +1,4 @@
-# Notion Calendar (Linux desktop)
+# Unofficial Notion Calendar (Linux desktop)
 
 Electron wrapper for [Notion Calendar](https://calendar.notion.so): **minimize to tray**, **native desktop notifications** (via `notify-send` / libnotify), and **persisted window size and position**.
 
