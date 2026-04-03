@@ -303,13 +303,34 @@ const URL_HINT_KEYS = [
   "calendarEventUrl",
   "eventUrl",
   "conferenceUrl",
+  "conferenceLink",
   "hangoutLink",
   "meetUrl",
   "entryPoints",
+  "zoomUrl",
+  "zoomMeetingUrl",
+  "videoConferenceUrl",
 ];
 
-function isHttpsUrlString(s: string): boolean {
-  return /^https:\/\//.test(s.trim());
+/** Meeting links we may open via the desktop shell (https web + common app protocols). */
+function isJoinMeetingUrlString(s: string): boolean {
+  const t = s.trim();
+  return (
+    /^https?:\/\//i.test(t) ||
+    /^zoommtg:\/\//i.test(t) ||
+    /^msteams:\/\//i.test(t)
+  );
+}
+
+function isSafeExternalMeetingUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    if (u.protocol === "https:" || u.protocol === "http:") return true;
+    if (u.protocol === "zoommtg:" || u.protocol === "msteams:") return true;
+    return false;
+  } catch {
+    return false;
+  }
 }
 
 function pickJoinButtonLabel(actions: Array<{ action: string; title: string }> | undefined): string {
@@ -333,20 +354,20 @@ function extractJoinUrlFromParsed(payload: {
         const obj = cur as Record<string, unknown>;
         for (const key of URL_HINT_KEYS) {
           const v = obj[key];
-          if (typeof v === "string" && isHttpsUrlString(v)) return v.trim();
+          if (typeof v === "string" && isJoinMeetingUrlString(v)) return v.trim();
           if (v && typeof v === "object") stack.push(v);
         }
         for (const v of Object.values(obj)) {
           if (v && typeof v === "object") stack.push(v);
-          if (typeof v === "string" && isHttpsUrlString(v)) return v.trim();
+          if (typeof v === "string" && isJoinMeetingUrlString(v)) return v.trim();
         }
       }
     } catch {
-      const m = payload.data.match(/https:\/\/[^\s"'<>]+/);
+      const m = payload.data.match(/(?:https?:\/\/|zoommtg:\/\/)[^\s"'<>]+/i);
       if (m) return m[0].replace(/[),.;]+$/u, "");
     }
   }
-  const bodyMatch = payload.body.match(/https:\/\/[^\s)\]]+/u);
+  const bodyMatch = payload.body.match(/(?:https?:\/\/|zoommtg:\/\/)[^\s)\]]+/iu);
   if (bodyMatch) return bodyMatch[0].replace(/[),.;]+$/u, "");
   return undefined;
 }
@@ -413,7 +434,7 @@ function dispatchNativeNotification(data: unknown): void {
 
   const child = execFile("notify-send", args, { timeout: 900_000 }, (_error, stdout) => {
     const action = stdout.trim();
-    if (action === "join" && joinUrl) {
+    if (action === "join" && joinUrl && isSafeExternalMeetingUrl(joinUrl)) {
       void shell.openExternal(joinUrl);
     } else if (action === "default") {
       mainWindow?.show();
