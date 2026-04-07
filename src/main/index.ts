@@ -13,6 +13,13 @@ import * as path from "path";
 import { optimizer } from "@electron-toolkit/utils";
 import config from "./config";
 
+// Linux title-bar / taskbar icon: Electron 38+ Wayland uses an XDG app id that must
+// match the installed .desktop file. See package.json `desktopName` (Electron #48391,
+// #49988). setName is an extra alignment with StartupWMClass for older paths.
+if (process.platform === "linux") {
+  app.setName("notion-calendar");
+}
+
 const host = "https://calendar.notion.so";
 
 const ALLOWED_HOSTNAMES = new Set([
@@ -30,6 +37,17 @@ function isAllowedUrl(url: string): boolean {
 
 const CHROME_UA =
   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36";
+
+/** Light inset so the web app is not flush against the window frame (KDE/Wayland). */
+const WRAPPER_INSET_CSS = `
+html { box-sizing: border-box; height: 100%; }
+body {
+  box-sizing: border-box;
+  margin: 0 !important;
+  padding: 6px 10px 10px 10px !important;
+  min-height: 100%;
+}
+`;
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -166,12 +184,16 @@ function createWindow(): BrowserWindow {
     autoHideMenuBar: true,
     icon: getAppIconPath(),
     title: "Notion Calendar",
+    // Dark chrome behind the webview reduces visible flash/jank while the page paints (notably in dev).
+    backgroundColor: "#191919",
     webPreferences: {
       preload: path.join(__dirname, "..", "preload", "index.js"),
       contextIsolation: true,
       nodeIntegration: false,
       nodeIntegrationInSubFrames: false,
       sandbox: true,
+      // In dev, avoid throttling the renderer when the window loses focus (smoother tabbing / DevTools).
+      backgroundThrottling: app.isPackaged,
     },
   };
 
@@ -217,6 +239,10 @@ function createWindow(): BrowserWindow {
 
   window.webContents.once("dom-ready", () => {
     window.webContents.executeJavaScript(NOTIFICATION_PATCH_SCRIPT, false).catch(() => {});
+  });
+
+  window.webContents.once("did-finish-load", () => {
+    void window.webContents.insertCSS(WRAPPER_INSET_CSS, { cssOrigin: "user" });
   });
 
   window.loadURL(host, { userAgent: CHROME_UA });
@@ -285,9 +311,26 @@ function isTrustedNotificationSender(event: Electron.IpcMainEvent): boolean {
   const sender = event.sender;
   if (!sender || sender.isDestroyed()) return false;
   try {
-    const url = sender.getURL();
-    if (!url || url === "about:blank") return false;
-    return isAllowedUrl(url);
+    const urls: string[] = [];
+    const mainUrl = sender.getURL();
+    if (mainUrl) urls.push(mainUrl);
+    try {
+      const frameUrl = event.senderFrame?.url;
+      if (frameUrl) urls.push(frameUrl);
+    } catch {
+      /* frame may be gone */
+    }
+    try {
+      const topUrl = sender.mainFrame?.url;
+      if (topUrl) urls.push(topUrl);
+    } catch {
+      /* ignore */
+    }
+    for (const url of urls) {
+      if (url === "about:blank") continue;
+      if (isAllowedUrl(url)) return true;
+    }
+    return false;
   } catch {
     return false;
   }
@@ -380,13 +423,16 @@ function parseNotificationPayload(data: unknown): {
 } | null {
   if (!data || typeof data !== "object") return null;
   const o = data as Record<string, unknown>;
-  if (typeof o.title !== "string" || typeof o.body !== "string") return null;
+  let title = o.title != null ? String(o.title).trim().slice(0, 256) : "";
+  let body = o.body != null ? String(o.body).slice(0, 8192) : "";
+  if (!title && !body.trim()) return null;
+  if (!title) title = "Notion Calendar";
   const out: {
     title: string;
     body: string;
     data?: string;
     actions?: Array<{ action: string; title: string }>;
-  } = { title: o.title, body: o.body };
+  } = { title, body };
   if (typeof o.data === "string") out.data = o.data;
   if (Array.isArray(o.actions)) {
     const actions: Array<{ action: string; title: string }> = [];
@@ -402,11 +448,38 @@ function parseNotificationPayload(data: unknown): {
   return out;
 }
 
+function logNotificationPayloadForDebug(data: unknown): void {
+  try {
+    console.log("[NotionCalendar] notification payload:", JSON.stringify(data, null, 2));
+  } catch {
+    console.log("[NotionCalendar] notification payload: (unserializable)");
+  }
+}
+
+/** Minimal notify-send when the full action-capable command fails (older libnotify, bad flags, etc.). */
+function notifySendMinimal(title: string, body: string): void {
+  const args = [
+    "--app-name=Notion Calendar",
+    `--icon=${getAppIconPath()}`,
+    "--urgency=critical",
+    "--expire-time=0",
+    "--",
+    title,
+    body,
+  ];
+  execFile("notify-send", args, (err) => {
+    if (err) console.error("[NotionCalendar] notify-send (minimal) failed:", err.message);
+  });
+}
+
 function dispatchNativeNotification(data: unknown): void {
-  console.log("[NotionCalendar] notification payload:", JSON.stringify(data, null, 2));
+  logNotificationPayloadForDebug(data);
 
   const parsed = parseNotificationPayload(data);
-  if (!parsed) return;
+  if (!parsed) {
+    console.warn("[NotionCalendar] dropped notification: could not parse payload");
+    return;
+  }
 
   console.log("[NotionCalendar] join URL extracted:", extractJoinUrlFromParsed(parsed) ?? "(none)");
 
@@ -432,8 +505,13 @@ function dispatchNativeNotification(data: unknown): void {
 
   args.push("--", title, body);
 
-  const child = execFile("notify-send", args, { timeout: 900_000 }, (_error, stdout) => {
-    const action = stdout.trim();
+  const child = execFile("notify-send", args, { timeout: 900_000 }, (err, stdout) => {
+    if (err) {
+      console.error("[NotionCalendar] notify-send failed:", err.message);
+      notifySendMinimal(title, body);
+      return;
+    }
+    const action = (stdout ?? "").trim();
     if (action === "join" && joinUrl && isSafeExternalMeetingUrl(joinUrl)) {
       void shell.openExternal(joinUrl);
     } else if (action === "default") {
@@ -463,17 +541,7 @@ function setupServiceWorkerNotificationBridge(sess: Electron.Session): void {
     });
   };
 
-  sess.serviceWorkers.on("registration-completed", async (_event, details) => {
-    if (!isAllowedUrl(details.scope)) return;
-    try {
-      const worker = await sess.serviceWorkers.startWorkerForScope(details.scope);
-      if (worker) attachWorker(worker);
-    } catch {
-      /* worker may already be running or scope unavailable */
-    }
-  });
-
-  setTimeout(() => {
+  const attachAllRunningWorkers = (): void => {
     try {
       const running = sess.serviceWorkers.getAllRunning();
       for (const versionId of Object.keys(running)) {
@@ -483,7 +551,31 @@ function setupServiceWorkerNotificationBridge(sess: Electron.Session): void {
     } catch {
       /* ignore */
     }
-  }, 2000);
+  };
+
+  sess.serviceWorkers.on("registration-completed", async (_event, details) => {
+    const scope = details?.scope;
+    if (!scope || !isAllowedUrl(scope)) return;
+    try {
+      const worker = await sess.serviceWorkers.startWorkerForScope(scope);
+      if (worker) attachWorker(worker);
+    } catch (e) {
+      console.warn("[NotionCalendar] startWorkerForScope failed:", scope, e);
+    }
+  });
+
+  sess.serviceWorkers.on("running-status-changed", (ev) => {
+    if (ev.runningStatus !== "running") return;
+    try {
+      const worker = sess.serviceWorkers.getWorkerFromVersionID(ev.versionId);
+      if (worker) attachWorker(worker);
+    } catch {
+      /* ignore */
+    }
+  });
+
+  setTimeout(attachAllRunningWorkers, 0);
+  setTimeout(attachAllRunningWorkers, 2000);
 }
 
 function setupNotificationForwarding(): void {
