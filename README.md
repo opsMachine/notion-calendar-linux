@@ -46,7 +46,7 @@ These are **defense-in-depth** measures; they do not replace a formal audit and 
 | Representation to Notion | **UA / Client Hints / `navigator` spoofing** tells Notion’s servers and scripts you are **Chrome on macOS**. That bypasses their **unofficial-client** steering; it is **not** a local privilege escalation, but it is intentional misrepresentation toward their site (same broad class as changing UA in a normal browser). |
 | New windows | Same hostname allowlist as navigation; external targets are not kept as captive Electron windows |
 | IPC | Renderer notification IPC requires the sender frame URL to use an allowed hostname; **`about:blank` / empty senders are rejected**. Service-worker IPC checks the worker **scope** the same way. Payloads are validated and title/body lengths are capped before `notify-send` runs |
-| Permissions | Session permission handlers only grant **notifications**; other permission requests are denied |
+| Permissions | Session permission handlers grant **notifications** and **clipboard** read/write (for copy buttons in the calendar UI); other permission requests are denied |
 | Native notify | `notify-send` is invoked with `execFile` (no shell), with bounded arguments |
 
 **Repository hygiene:** `.env` files, `*.pem` / `*.key`, and similar patterns are in [`.gitignore`](.gitignore) to reduce the risk of committing secrets or keys by mistake.

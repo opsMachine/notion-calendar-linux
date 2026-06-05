@@ -785,20 +785,19 @@ function setupNotificationForwarding(): void {
   });
 }
 
+const GRANTED_SESSION_PERMISSIONS = new Set([
+  "notifications",
+  "clipboard-read",
+  "clipboard-sanitized-write",
+]);
+
 function setupPermissions(): void {
   session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
-    if (permission === "notifications") {
-      callback(true);
-      return;
-    }
-    callback(false);
+    callback(GRANTED_SESSION_PERMISSIONS.has(permission));
   });
 
   session.defaultSession.setPermissionCheckHandler((_webContents, permission) => {
-    if (permission === "notifications") {
-      return true;
-    }
-    return false;
+    return GRANTED_SESSION_PERMISSIONS.has(permission);
   });
 }
 
