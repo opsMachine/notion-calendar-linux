@@ -654,18 +654,21 @@ function logNotificationPayloadForDebug(data: unknown): void {
   }
 }
 
-/** Minimal notify-send when the full action-capable command fails (older libnotify, bad flags, etc.). */
-function notifySendMinimal(title: string, body: string): void {
-  const args = [
+/** Shared notify-send flags. Plasma 6.4+ keeps action notifications resident unless marked transient. */
+function buildNotifySendBaseArgs(): string[] {
+  return [
     "--app-name=Notion Calendar",
     `--icon=${getAppIconPath()}`,
     "--urgency=normal",
-    "--expire-time=1200000",
+    "--transient",
+    "--expire-time=-1",
     "--hint=string:desktop-entry:notion-calendar",
-    "--",
-    title,
-    body,
   ];
+}
+
+/** Minimal notify-send when the full action-capable command fails (older libnotify, bad flags, etc.). */
+function notifySendMinimal(title: string, body: string): void {
+  const args = [...buildNotifySendBaseArgs(), "--", title, body];
   execFile("notify-send", args, (err) => {
     if (err) console.error("[NotionCalendar] notify-send (minimal) failed:", err.message);
   });
@@ -687,14 +690,7 @@ function dispatchNativeNotification(data: unknown): void {
   const title = parsed.title.slice(0, 256);
   const body = parsed.body.slice(0, 8192);
 
-  const args: string[] = [
-    "--app-name=Notion Calendar",
-    `--icon=${getAppIconPath()}`,
-    "--urgency=normal",
-    "--expire-time=1200000",
-    "--hint=string:desktop-entry:notion-calendar",
-    "--wait",
-  ];
+  const args: string[] = [...buildNotifySendBaseArgs(), "--wait"];
 
   // `default` opens the calendar when the user clicks the notification body (often not shown as a button).
   // When a meeting link exists, a single `join` action is the only visible button.
@@ -705,7 +701,7 @@ function dispatchNativeNotification(data: unknown): void {
 
   args.push("--", title, body);
 
-  const child = execFile("notify-send", args, { timeout: 900_000 }, (err, stdout) => {
+  const child = execFile("notify-send", args, { timeout: 120_000 }, (err, stdout) => {
     if (err) {
       console.error("[NotionCalendar] notify-send failed:", err.message);
       notifySendMinimal(title, body);
