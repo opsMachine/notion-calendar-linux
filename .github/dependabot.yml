@@ -10,3 +10,15 @@ updates:
    directory: "/"
    schedule:
      interval: weekly
+
+ # Electron patch releases carry Chromium security fixes; the app renders a
+ # remote web app full-time, so lockfile drift here matters more than usual.
+ - package-ecosystem: "npm"
+   directory: "/"
+   schedule:
+     interval: weekly
+
+ - package-ecosystem: "github-actions"
+   directory: "/"
+   schedule:
+     interval: weekly
