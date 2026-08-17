@@ -13,6 +13,7 @@ import * as path from "path";
 import { optimizer } from "@electron-toolkit/utils";
 // Side effects: userData path + name must run before Store ctor (see config.ts).
 import config from "./config";
+import { CHROME_UA, SEC_CH_UA, UA_PLATFORM } from "../shared/user-agent";
 
 // Before `app.ready`. Reduces automation-oriented signals some sites combine with UA heuristics.
 app.commandLine.appendSwitch("disable-blink-features", "AutomationControlled");
@@ -33,16 +34,36 @@ const ALLOWED_HOSTNAMES = new Set([
   "calendar-te.notion.so",
 ]);
 
+/**
+ * Navigation guard only. Deliberately **fails open**: other schemes (blob:, about:, data:)
+ * have no hostname to check and blocking them breaks legitimate page loads, so they pass.
+ * Never use this to decide whether to trust a caller — see `isTrustedNotionOrigin`.
+ */
 function isAllowedUrl(url: string): boolean {
   try {
     const parsed = new URL(url);
-    // Only gate http(s). Other schemes (e.g. blob:, about:) have no hostname here; blocking them breaks loads.
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
       return true;
     }
     return ALLOWED_HOSTNAMES.has(parsed.hostname);
   } catch {
     return true;
+  }
+}
+
+/**
+ * Trust decisions (IPC senders, service-worker scopes, permission grants). Deliberately
+ * **fails closed**, unlike `isAllowedUrl`: a blob:/data: frame has no origin we can vouch
+ * for, so it must not inherit calendar.notion.so's privileges. Do not merge the two.
+ */
+function isTrustedNotionOrigin(url: string | undefined | null): url is string {
+  if (!url) return false;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "https:") return false;
+    return ALLOWED_HOSTNAMES.has(parsed.hostname);
+  } catch {
+    return false;
   }
 }
 
@@ -137,8 +158,8 @@ function attachWebNavigationGuards(contents: Electron.WebContents): void {
 // Notion Calendar (post ~2026-05-05) can redirect unofficial wrappers to the download page.
 // Spoof macOS in both the UA string and Client Hints — Statsig / feature gates often use
 // Sec-CH-UA-Platform ("Linux") even when User-Agent is overridden.
-const CHROME_UA =
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36";
+// The strings live in src/shared/user-agent.ts so the wire headers and the preload's
+// `navigator` overrides cannot drift apart.
 
 /** Strip Chromium's default Linux hints and send macOS-aligned low-entropy hints. */
 function applyMacClientHints(headers: Record<string, string | string[] | undefined>): void {
@@ -147,10 +168,9 @@ function applyMacClientHints(headers: Record<string, string | string[] | undefin
       delete headers[key];
     }
   }
-  headers["Sec-CH-UA"] =
-    '"Chromium";v="135", "Google Chrome";v="135", "Not;A=Brand";v="99"';
+  headers["Sec-CH-UA"] = SEC_CH_UA;
   headers["Sec-CH-UA-Mobile"] = "?0";
-  headers["Sec-CH-UA-Platform"] = '"macOS"';
+  headers["Sec-CH-UA-Platform"] = `"${UA_PLATFORM}"`;
 }
 
 /**
@@ -525,8 +545,7 @@ function isTrustedNotificationSender(event: Electron.IpcMainEvent): boolean {
       /* ignore */
     }
     for (const url of urls) {
-      if (url === "about:blank") continue;
-      if (isAllowedUrl(url)) return true;
+      if (isTrustedNotionOrigin(url)) return true;
     }
     return false;
   } catch {
@@ -674,6 +693,29 @@ function notifySendMinimal(title: string, body: string): void {
   });
 }
 
+/**
+ * `--wait` keeps a notify-send process alive until the user dismisses the notification (up to
+ * the 2-minute timeout below). The page can call showNotification in a loop, so cap how many
+ * of those can be outstanding; past the cap fall back to the fire-and-forget form.
+ */
+const MAX_CONCURRENT_WAITING_NOTIFY_SEND = 8;
+let waitingNotifySendCount = 0;
+
+/** Notion's service worker re-fires the same reminder on reconnect; drop exact repeats. */
+const NOTIFICATION_DEDUPE_WINDOW_MS = 5000;
+const recentNotificationKeys = new Map<string, number>();
+
+function isDuplicateNotification(title: string, body: string): boolean {
+  const key = `${title} ${body}`;
+  const now = Date.now();
+  for (const [k, seenAt] of recentNotificationKeys) {
+    if (now - seenAt > NOTIFICATION_DEDUPE_WINDOW_MS) recentNotificationKeys.delete(k);
+  }
+  if (recentNotificationKeys.has(key)) return true;
+  recentNotificationKeys.set(key, now);
+  return false;
+}
+
 function dispatchNativeNotification(data: unknown): void {
   logNotificationPayloadForDebug(data);
 
@@ -690,6 +732,16 @@ function dispatchNativeNotification(data: unknown): void {
   const title = parsed.title.slice(0, 256);
   const body = parsed.body.slice(0, 8192);
 
+  if (isDuplicateNotification(title, body)) return;
+
+  if (waitingNotifySendCount >= MAX_CONCURRENT_WAITING_NOTIFY_SEND) {
+    console.warn(
+      "[NotionCalendar] too many pending notifications; showing without action buttons",
+    );
+    notifySendMinimal(title, body);
+    return;
+  }
+
   const args: string[] = [...buildNotifySendBaseArgs(), "--wait"];
 
   // `default` opens the calendar when the user clicks the notification body (often not shown as a button).
@@ -701,7 +753,9 @@ function dispatchNativeNotification(data: unknown): void {
 
   args.push("--", title, body);
 
+  waitingNotifySendCount += 1;
   const child = execFile("notify-send", args, { timeout: 120_000 }, (err, stdout) => {
+    waitingNotifySendCount -= 1;
     if (err) {
       console.error("[NotionCalendar] notify-send failed:", err.message);
       notifySendMinimal(title, body);
@@ -729,10 +783,10 @@ function registerServiceWorkerPreload(sess: Electron.Session): void {
 
 function setupServiceWorkerNotificationBridge(sess: Electron.Session): void {
   const attachWorker = (worker: Electron.ServiceWorkerMain): void => {
-    if (!isAllowedUrl(worker.scope)) return;
+    if (!isTrustedNotionOrigin(worker.scope)) return;
     worker.ipc.removeAllListeners("show-notification");
     worker.ipc.on("show-notification", (event, data: unknown) => {
-      if (!isAllowedUrl(event.serviceWorker.scope)) return;
+      if (!isTrustedNotionOrigin(event.serviceWorker.scope)) return;
       dispatchNativeNotification(data);
     });
   };
@@ -751,7 +805,7 @@ function setupServiceWorkerNotificationBridge(sess: Electron.Session): void {
 
   sess.serviceWorkers.on("registration-completed", async (_event, details) => {
     const scope = details?.scope;
-    if (!scope || !isAllowedUrl(scope)) return;
+    if (!isTrustedNotionOrigin(scope)) return;
     try {
       const worker = await sess.serviceWorkers.startWorkerForScope(scope);
       if (worker) attachWorker(worker);
@@ -781,20 +835,46 @@ function setupNotificationForwarding(): void {
   });
 }
 
-const GRANTED_SESSION_PERMISSIONS = new Set([
-  "notifications",
-  "clipboard-read",
-  "clipboard-sanitized-write",
-]);
+// `clipboard-read` is deliberately absent: copy buttons need only the sanitized *write*
+// permission. Granting read would let page script silently read the whole system clipboard
+// (including a password just copied out of a manager) with no prompt.
+const GRANTED_SESSION_PERMISSIONS = new Set(["notifications", "clipboard-sanitized-write"]);
+
+/**
+ * Grants are scoped to Notion origins rather than handed to whatever is in the session.
+ * Check every URL Electron offers — service-worker-initiated requests can arrive with a null
+ * `webContents`, so relying on the frame alone would silently kill calendar notifications.
+ */
+function isPermissionRequesterTrusted(
+  contents: Electron.WebContents | null,
+  ...candidateUrls: Array<string | undefined>
+): boolean {
+  for (const url of candidateUrls) {
+    if (isTrustedNotionOrigin(url)) return true;
+  }
+  if (!contents || contents.isDestroyed()) return false;
+  try {
+    return isTrustedNotionOrigin(contents.getURL());
+  } catch {
+    return false;
+  }
+}
 
 function setupPermissions(): void {
-  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
-    callback(GRANTED_SESSION_PERMISSIONS.has(permission));
+  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
+    if (!GRANTED_SESSION_PERMISSIONS.has(permission)) {
+      callback(false);
+      return;
+    }
+    callback(isPermissionRequesterTrusted(webContents, details?.requestingUrl));
   });
 
-  session.defaultSession.setPermissionCheckHandler((_webContents, permission) => {
-    return GRANTED_SESSION_PERMISSIONS.has(permission);
-  });
+  session.defaultSession.setPermissionCheckHandler(
+    (webContents, permission, requestingOrigin, details) => {
+      if (!GRANTED_SESSION_PERMISSIONS.has(permission)) return false;
+      return isPermissionRequesterTrusted(webContents, requestingOrigin, details?.requestingUrl);
+    },
+  );
 }
 
 const gotLock = app.requestSingleInstanceLock();
