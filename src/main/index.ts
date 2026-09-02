@@ -9,6 +9,7 @@ import {
   nativeImage,
 } from "electron";
 import { execFile } from "child_process";
+import * as fs from "fs";
 import * as path from "path";
 import { optimizer } from "@electron-toolkit/utils";
 // Side effects: userData path + name must run before Store ctor (see config.ts).
@@ -233,6 +234,8 @@ body {
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let isQuitting = false;
+/** Set once a Notion service worker has been wired to the notification bridge (see the watchdog below). */
+let serviceWorkerAttached = false;
 
 const NOTIFICATION_PATCH_SCRIPT = `
 (function () {
@@ -727,9 +730,13 @@ function registerServiceWorkerPreload(sess: Electron.Session): void {
   });
 }
 
+/** Grace period for Notion to register its worker before we warn that notifications are dead. */
+const SERVICE_WORKER_WATCHDOG_MS = 45_000;
+
 function setupServiceWorkerNotificationBridge(sess: Electron.Session): void {
   const attachWorker = (worker: Electron.ServiceWorkerMain): void => {
     if (!isAllowedUrl(worker.scope)) return;
+    serviceWorkerAttached = true;
     worker.ipc.removeAllListeners("show-notification");
     worker.ipc.on("show-notification", (event, data: unknown) => {
       if (!isAllowedUrl(event.serviceWorker.scope)) return;
@@ -772,6 +779,20 @@ function setupServiceWorkerNotificationBridge(sess: Electron.Session): void {
 
   setTimeout(attachAllRunningWorkers, 0);
   setTimeout(attachAllRunningWorkers, 2000);
+
+  // Notifications are delivered through the service worker, so a failed registration silently
+  // disables them. Say so instead of going quiet; the usual cause is broken service worker
+  // storage, which `healStorageAfterUncleanExit` clears on the next start.
+  const watchdog = setTimeout(() => {
+    if (serviceWorkerAttached) return;
+    console.warn(
+      "[NotionCalendar] no service worker attached after",
+      SERVICE_WORKER_WATCHDOG_MS / 1000,
+      "s - native notifications will not fire. If the page console shows",
+      '"Failed to register a ServiceWorker", quit and relaunch to rebuild service worker storage.',
+    );
+  }, SERVICE_WORKER_WATCHDOG_MS);
+  watchdog.unref?.();
 }
 
 function setupNotificationForwarding(): void {
@@ -797,10 +818,78 @@ function setupPermissions(): void {
   });
 }
 
+/**
+ * Present while the app is running; removed on a clean quit. Left behind means the previous
+ * run died without unwinding.
+ */
+function crashMarkerPath(): string {
+  return path.join(app.getPath("userData"), "wrapper-running.marker");
+}
+
+/**
+ * Chromium aborts the browser process (SIGTRAP, `FATAL ... GPU process isn't usable. Goodbye.`)
+ * when its zygote dies while the browser process lives - session logout tearing down the systemd
+ * scope, or a broad `pkill -f` that also matches the child command lines. The abort happens with
+ * the service worker LevelDB open, leaving it unreadable; Chromium then disables service worker
+ * storage for the whole session, so every `navigator.serviceWorker.register()` fails with
+ * "The document is in an invalid state." Notion's SPA waits forever on its worker-backed cache
+ * (`cacheUserPreferences` -> WHEN_TIMEOUT) and the calendar never finishes loading, taking our
+ * notification bridge down with it.
+ *
+ * Both stores are pure cache - Notion refetches the worker and cookies/login live elsewhere - so
+ * after a hard exit it is cheaper to drop them than to run on storage Chromium cannot repair.
+ * Must run before anything touches `session.defaultSession`, and only while we hold the
+ * single-instance lock, so we never delete a live instance's profile.
+ */
+function healStorageAfterUncleanExit(): void {
+  const marker = crashMarkerPath();
+  let uncleanExit = false;
+  try {
+    uncleanExit = fs.existsSync(marker);
+  } catch {
+    return;
+  }
+
+  if (uncleanExit) {
+    const userData = app.getPath("userData");
+    const stores = [
+      path.join(userData, "Service Worker"),
+      path.join(userData, "WebStorage", "QuotaManager"),
+      path.join(userData, "WebStorage", "QuotaManager-journal"),
+    ];
+    for (const target of stores) {
+      try {
+        fs.rmSync(target, { recursive: true, force: true });
+      } catch (e) {
+        console.warn("[NotionCalendar] could not clear", target, e);
+      }
+    }
+    console.warn(
+      "[NotionCalendar] previous run exited abnormally; cleared service worker and quota storage",
+    );
+  }
+
+  try {
+    fs.writeFileSync(marker, String(process.pid));
+  } catch {
+    /* best effort: a missing marker only costs us the heal on the next hard exit */
+  }
+}
+
+function clearCrashMarker(): void {
+  try {
+    fs.rmSync(crashMarkerPath(), { force: true });
+  } catch {
+    /* ignore */
+  }
+}
+
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
 } else {
+  healStorageAfterUncleanExit();
+
   app.on("second-instance", () => {
     if (mainWindow) {
       mainWindow.show();
@@ -845,6 +934,7 @@ if (!gotLock) {
       saveWindowState();
       tray?.destroy();
       tray = null;
+      clearCrashMarker();
     });
   });
 }
