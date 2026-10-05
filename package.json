@@ -4,7 +4,7 @@
   "desktopName": "notion-calendar.desktop",
   "description": "Electron wrapper for Notion Calendar on Linux: tray (minimize on close), native notifications via notify-send/libnotify with join link actions, window state, and KDE-friendly packaging.",
   "homepage": "https://github.com/opsmachine/notion-calendar-linux",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "author": {
     "name": "Dušan Simić",
     "email": "dusan.simic1810@gmail.com",

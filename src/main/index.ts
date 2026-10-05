@@ -941,7 +941,13 @@ if (!gotLock) {
       saveWindowState();
       tray?.destroy();
       tray = null;
-      clearCrashMarker();
     });
+
+    // Not in `before-quit`: on session logout systemd SIGTERMs the whole scope at once, Chromium's
+    // shutdown detector runs `before-quit`, and only then does the dead zygote take the browser
+    // process down (`GPU process isn't usable. Goodbye.`) with service worker storage open.
+    // Clearing the marker there hid exactly the crash it exists to catch. `quit` is the last
+    // event of a shutdown that actually finished; the abort path never reaches it.
+    app.on("quit", clearCrashMarker);
   });
 }
