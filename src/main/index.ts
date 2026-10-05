@@ -18,9 +18,14 @@ import config from "./config";
 // Before `app.ready`. Reduces automation-oriented signals some sites combine with UA heuristics.
 app.commandLine.appendSwitch("disable-blink-features", "AutomationControlled");
 
-const host = "https://calendar.notion.so";
+// Notion moved the calendar web app to calendar.notion.com (2026-10). The old .so origin still
+// serves the SPA but client-redirects to .com, so loading .so directly only adds a hop.
+const host = "https://calendar.notion.com";
 
 const ALLOWED_HOSTNAMES = new Set([
+  "calendar.notion.com",
+  "calendar-api.notion.com",
+  // Legacy .so origins: still referenced by calendar CSP and old deep links.
   "calendar.notion.so",
   "calendar-api.notion.so",
   // Email/password (and other first-party) sign-in often leaves calendar.* for www / apex Notion.
@@ -63,7 +68,7 @@ function isCalendarDesktopMarketingUrl(url: string): boolean {
 const MAX_MARKETING_REDIRECT_RELOADS = 5;
 const marketingRedirectReloadsByWebContentsId = new Map<number, number>();
 
-// Never reset the marketing-redirect counter on `did-navigate` to calendar.notion.so: the SPA
+// Never reset the marketing-redirect counter on `did-navigate` to the calendar host: the SPA
 // loads there first, then client-navigates to www.notion.com/product/calendar/… — resetting
 // on every calendar navigation undoes the cap and causes an infinite reload loop.
 
@@ -162,6 +167,7 @@ function applyMacClientHints(headers: Record<string, string | string[] | undefin
  * We strip CSP only for **HTML** responses on first-party Notion hosts we navigate to in-app.
  */
 const CSP_STRIP_HTML_HOSTS = new Set([
+  "calendar.notion.com",
   "calendar.notion.so",
   "www.notion.so",
   "notion.so",
@@ -907,7 +913,8 @@ if (!gotLock) {
       applyMacClientHints(headers);
       if (
         details.resourceType === "mainFrame" &&
-        details.url.startsWith("https://calendar.notion.so/")
+        (details.url.startsWith("https://calendar.notion.com/") ||
+          details.url.startsWith("https://calendar.notion.so/"))
       ) {
         headers["Cache-Control"] = "no-cache";
         headers["Pragma"] = "no-cache";
