@@ -87,7 +87,7 @@ function resetMarketingRedirectReloadCount(contents: Electron.WebContents): void
 }
 
 function reloadCalendarHome(contents: Electron.WebContents): void {
-  void contents.loadURL(host, { userAgent: CHROME_UA });
+  contents.loadURL(host, { userAgent: CHROME_UA }).catch(() => {});
 }
 
 function attachWebNavigationGuards(contents: Electron.WebContents): void {
@@ -387,6 +387,40 @@ function setupAppMenu(): void {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
+/** ERR_ABORTED: our own navigation guards and Notion's client-side redirects cancel loads on purpose. */
+const NET_ERR_ABORTED = -3;
+const LOAD_RETRY_MIN_MS = 2_000;
+const LOAD_RETRY_MAX_MS = 60_000;
+
+/**
+ * A failed top-level load leaves Chromium's error page in the window, and nothing reloads it.
+ * At login this happens on most boots: Docker brings up its veth interfaces while the first
+ * request is in flight, Chromium reports ERR_NETWORK_CHANGED, and the calendar stays blank
+ * until the app is relaunched. Retry with backoff instead, for as long as it keeps failing.
+ */
+function retryFailedMainFrameLoads(contents: Electron.WebContents): void {
+  let attempt = 0;
+  let timer: NodeJS.Timeout | undefined;
+
+  contents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    if (!isMainFrame || errorCode === NET_ERR_ABORTED || !isAllowedUrl(validatedURL)) return;
+    if (timer) return;
+    const delay = Math.min(LOAD_RETRY_MIN_MS * 2 ** attempt, LOAD_RETRY_MAX_MS);
+    attempt += 1;
+    console.warn(
+      `[NotionCalendar] load failed (${errorDescription}, ${errorCode}); retry ${attempt} in ${delay / 1000}s`,
+    );
+    timer = setTimeout(() => {
+      timer = undefined;
+      if (!contents.isDestroyed()) reloadCalendarHome(contents);
+    }, delay);
+  });
+
+  contents.on("did-navigate", (_event, url, httpResponseCode) => {
+    if (httpResponseCode >= 200 && httpResponseCode < 400 && isAllowedUrl(url)) attempt = 0;
+  });
+}
+
 function createWindow(): BrowserWindow {
   const lastState = config.store.lastWindowState;
 
@@ -452,7 +486,11 @@ function createWindow(): BrowserWindow {
     void window.webContents.insertCSS(WRAPPER_INSET_CSS, { cssOrigin: "user" });
   });
 
-  window.loadURL(host, { userAgent: CHROME_UA });
+  retryFailedMainFrameLoads(window.webContents);
+
+  // Failures are handled by `retryFailedMainFrameLoads`; catching here only silences the
+  // unhandled-rejection warning Electron prints for them.
+  window.loadURL(host, { userAgent: CHROME_UA }).catch(() => {});
 
   return window;
 }
