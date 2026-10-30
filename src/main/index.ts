@@ -927,9 +927,11 @@ function isPermissionRequesterTrusted(
   contents: Electron.WebContents | null,
   ...candidateUrls: Array<string | undefined>
 ): boolean {
-  for (const url of candidateUrls) {
-    if (isTrustedNotionOrigin(url)) return true;
-  }
+  // Decide on the requester whenever Electron names one. Falling back to the top-level page
+  // here would hand a cross-origin iframe the page's grants: Chromium does not require
+  // Permissions-Policy delegation for `notifications`.
+  const present = candidateUrls.filter((u): u is string => !!u);
+  if (present.length > 0) return present.some(isTrustedNotionOrigin);
   if (!contents || contents.isDestroyed()) return false;
   try {
     return isTrustedNotionOrigin(contents.getURL());
