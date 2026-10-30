@@ -91,6 +91,20 @@ Linux package (see `electron-builder.yaml`):
 npm run build:linux
 ```
 
+## Releases
+
+Prebuilt `.deb` packages are attached to each [GitHub release](https://github.com/opsMachine/notion-calendar-linux/releases):
+
+```bash
+sudo dpkg -i notion-calendar_<version>_amd64.deb
+```
+
+To cut a release, bump `version` in `package.json`, merge to `main`, then tag that commit and push the tag. The `Release` workflow builds the `.deb` and publishes the release with notes generated from the commits since the previous tag; it fails if the tag and `package.json` version disagree.
+
+```bash
+git tag v0.2.4 && git push origin v0.2.4
+```
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
