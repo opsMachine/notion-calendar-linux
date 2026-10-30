@@ -11,6 +11,30 @@ Mode: interactive, max 5 cycles. Exit after cycle 2: zero in-repo P0/P1.
 Carried, not fixable in repo: AppArmor `/etc/apparmor.d/notify-send` denies `NotificationClosed`, `ActionInvoked` and the
 timeout SIGTERM, so Join / Open Calendar never work and `--wait` children orphan. Needs a local override (user, root).
 
+## Open: AppArmor local override (user action)
+
+Copied from the cycle 1 audit (A1/A2):
+
+**Machine fix (user action, root; I did not apply it), new file `/etc/apparmor.d/local/notify-send`:**
+
+```
+dbus (send)
+    bus=session
+    path=/org/freedesktop/Notifications
+    interface=org.freedesktop.Notifications
+    member=GetCapabilities,
+dbus (receive)
+    bus=session
+    path=/org/freedesktop/Notifications
+    interface=org.freedesktop.Notifications
+    member={ActionInvoked,NotificationClosed,ActivationToken},
+signal (receive) set=(term) peer={notion-calendar,claude-desktop-unofficial},
+```
+
+Then `sudo apparmor_parser -r /etc/apparmor.d/notify-send`. The profile name `notify-send` is the `include if exists <local/notify-send>` hook, so this file holds bare rules only. I checked syntax by feeding an equivalent scratch profile (including `peer={...}`) to `apparmor_parser -Q -K -I /etc/apparmor.d -o /dev/null`: it parsed with no errors. I could not test the effect without loading it. Existing orphans keep running until killed by the user (`pkill -f 'notify-send.*Notion Calendar'` or logout); I did not touch them.
+
+Verify afterwards: next reminder should show no new `NotificationClosed`/`SIGTERM` denials, and the `notify-send` process should exit on dismiss.
+
 ## Cycle 1 action matrix
 
 | Priority | Issue | Verdict | Effort | Depends On |
