@@ -1,6 +1,8 @@
 /node_modules/
 /out/
 /dist/
+# tsconfig.node.json sets composite: true, so tsc emits this even under --noEmit
+*.tsbuildinfo
 
 .env
 .env.*

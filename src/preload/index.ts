@@ -1,4 +1,15 @@
 import { contextBridge, ipcRenderer } from "electron";
+import {
+  CHROME_APP_VERSION,
+  CHROME_FULL_VERSION,
+  CHROME_UA,
+  NAVIGATOR_PLATFORM,
+  NAVIGATOR_VENDOR,
+  UA_BRANDS,
+  UA_FULL_VERSION_LIST,
+  UA_PLATFORM,
+  UA_PLATFORM_VERSION,
+} from "../shared/user-agent";
 
 // Main-world overrides before any page script runs. Notion's bundle checks
 // /electron/i.test(navigator.userAgent); feature gates may also use
@@ -7,13 +18,8 @@ import { contextBridge, ipcRenderer } from "electron";
 // Navigator.prototype. Spoof userAgentData so JS APIs align with the macOS
 // UA we send on the wire (see main process + disable-blink-features).
 (function injectNavigatorOverrides() {
-  const SPOOF_UA =
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36";
-  const brands = [
-    { brand: "Chromium", version: "135" },
-    { brand: "Google Chrome", version: "135" },
-    { brand: "Not;A=Brand", version: "99" },
-  ];
+  const SPOOF_UA = CHROME_UA;
+  const brands = UA_BRANDS;
   const script = document.createElement("script");
   script.textContent = `(function(){
     if (window.__notionCalendarNavSpoofApplied) return;
@@ -25,28 +31,26 @@ import { contextBridge, ipcRenderer } from "electron";
     } catch (e) {}
     var UA = ${JSON.stringify(SPOOF_UA)};
     var brands = ${JSON.stringify(brands)};
+    var platform = ${JSON.stringify(UA_PLATFORM)};
+    var fullVersionList = ${JSON.stringify(UA_FULL_VERSION_LIST)};
     var fake = {
       brands: brands,
       mobile: false,
-      platform: "macOS",
+      platform: platform,
       toJSON: function () {
-        return { brands: brands, mobile: false, platform: "macOS" };
+        return { brands: brands, mobile: false, platform: platform };
       },
       getHighEntropyValues: function () {
         return Promise.resolve({
           architecture: "x86",
           bitness: "64",
           brands: brands,
-          fullVersionList: [
-            { brand: "Chromium", version: "135.0.0.0" },
-            { brand: "Google Chrome", version: "135.0.0.0" },
-            { brand: "Not;A=Brand", version: "99.0.0.0" },
-          ],
+          fullVersionList: fullVersionList,
           mobile: false,
           model: "",
-          platform: "macOS",
-          platformVersion: "15.0.0",
-          uaFullVersion: "135.0.0.0",
+          platform: platform,
+          platformVersion: ${JSON.stringify(UA_PLATFORM_VERSION)},
+          uaFullVersion: ${JSON.stringify(CHROME_FULL_VERSION)},
           wow64: false,
         });
       },
@@ -59,7 +63,7 @@ import { contextBridge, ipcRenderer } from "electron";
     } catch (e) {}
     try {
       Object.defineProperty(Navigator.prototype, "platform", {
-        get: function () { return "MacIntel"; },
+        get: function () { return ${JSON.stringify(NAVIGATOR_PLATFORM)}; },
         configurable: true,
       });
     } catch (e) {}
@@ -69,7 +73,7 @@ import { contextBridge, ipcRenderer } from "electron";
         configurable: true,
       });
     } catch (e) {}
-    var appVer = "5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36";
+    var appVer = ${JSON.stringify(CHROME_APP_VERSION)};
     try {
       Object.defineProperty(Navigator.prototype, "appVersion", {
         get: function () { return appVer; },
@@ -78,7 +82,7 @@ import { contextBridge, ipcRenderer } from "electron";
     } catch (e) {}
     try {
       Object.defineProperty(Navigator.prototype, "vendor", {
-        get: function () { return "Google Inc."; },
+        get: function () { return ${JSON.stringify(NAVIGATOR_VENDOR)}; },
         configurable: true,
       });
     } catch (e) {}
