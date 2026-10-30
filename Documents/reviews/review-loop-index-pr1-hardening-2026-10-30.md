@@ -72,3 +72,5 @@ Verify afterwards: next reminder should show no new `NotificationClosed`/`SIGTER
 | P3 | G#5: split `TRUSTED_NOTION_ORIGINS` from the nav list | ⚠️ optional | quick fix | none |
 | P3 | Cosmetics: stale `.so` comment `:63`, unverified "re-fires on reconnect" `:756`, package.json floors, SW `userAgentData`, README CSP row | ✅ / 🔍 | quick fix | none |
 | closed | G#1 code part (`f7b7947`), N2 log leak, G#9 reviews dir | ✅ | n/a | n/a |
+
+Cut 2026-10-30 in e73322c: per-cycle grumpy reviews and audits (cycles 1-2). Restore: git checkout e73322c^ -- Documents/reviews
