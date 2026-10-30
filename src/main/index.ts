@@ -741,7 +741,7 @@ function buildNotifySendBaseArgs(): string[] {
 function notifySendMinimal(title: string, body: string): void {
   const args = [...buildNotifySendBaseArgs(), "--", title, body];
   execFile("notify-send", args, (err) => {
-    if (err) console.error("[NotionCalendar] notify-send (minimal) failed:", err.message);
+    if (err) console.error("[NotionCalendar] notify-send (minimal) failed:", err.code);
   });
 }
 
@@ -808,7 +808,15 @@ function dispatchNativeNotification(data: unknown): void {
   const child = execFile("notify-send", args, { timeout: 120_000 }, (err, stdout) => {
     waitingNotifySendCount -= 1;
     if (err) {
-      console.error("[NotionCalendar] notify-send failed:", err.message);
+      // `err.message` embeds the full command line (title, body), so log only the code.
+      // The 120 s timeout is the notification expiring, not notify-send failing: re-posting it
+      // would show every reminder twice. Under Ubuntu's notify-send AppArmor profile the timeout
+      // SIGTERM is denied, which surfaces here as `kill EACCES` (`killed` unset, child alive).
+      if (err.killed || (err as NodeJS.ErrnoException).syscall === "kill") {
+        console.warn("[NotionCalendar] notify-send --wait timed out:", err.code ?? err.signal);
+        return;
+      }
+      console.error("[NotionCalendar] notify-send failed:", err.code);
       notifySendMinimal(title, body);
       return;
     }
