@@ -809,9 +809,10 @@ function dispatchNativeNotification(data: unknown): void {
     waitingNotifySendCount -= 1;
     if (err) {
       // `err.message` embeds the full command line (title, body), so log only the code.
-      // The 120 s timeout is the notification expiring, not notify-send failing: re-posting it
-      // would show every reminder twice. Under Ubuntu's notify-send AppArmor profile the timeout
-      // SIGTERM is denied, which surfaces here as `kill EACCES` (`killed` unset, child alive).
+      // Hitting the 120 s timeout means we never heard the notification close - not that
+      // notify-send failed - so re-posting would duplicate it. Ubuntu's notify-send AppArmor
+      // profile blocks the close signal, so here every reminder ran into it; the timeout SIGTERM
+      // is denied too, which surfaces as `kill EACCES` (`killed` unset, child still alive).
       if (err.killed || (err as NodeJS.ErrnoException).syscall === "kill") {
         console.warn("[NotionCalendar] notify-send --wait timed out:", err.code ?? err.signal);
         return;
