@@ -137,3 +137,52 @@ contextBridge.exposeInMainWorld("notionCalendar", {
     });
   },
 });
+
+// Notion picks the week grid's first column at load, before the saved `weekStartDay` has been
+// read, from the first weekday of the app language. Report the system date locale's first
+// weekday for that default locale instead. `executeInMainWorld` runs before any page script;
+// the inline-script route above has to wait until `documentElement` exists.
+(function overrideWeekStart() {
+  // POSIX precedence; empty values are skipped.
+  const posix = process.env.LC_ALL || process.env.LC_TIME || process.env.LANG;
+  const tag = posix?.split(/[.@]/)[0].replace(/_/g, "-");
+  if (!tag || tag === "C" || tag === "POSIX") return;
+
+  type WeekInfo = { firstDay: number };
+  type WeekInfoLocale = { getWeekInfo?: () => WeekInfo; weekInfo?: WeekInfo };
+  let firstDay: number | undefined;
+  try {
+    const locale = new Intl.Locale(tag) as WeekInfoLocale;
+    firstDay = (locale.getWeekInfo?.() ?? locale.weekInfo)?.firstDay;
+  } catch {
+    return;
+  }
+  if (firstDay === undefined) return;
+
+  contextBridge.executeInMainWorld({
+    // Serialized into the page, so it cannot reference anything outside its own body.
+    func: (day: number) => {
+      const proto = Intl.Locale.prototype as WeekInfoLocale;
+      const defaultTag = new Intl.DateTimeFormat().resolvedOptions().locale;
+      const adjust = (locale: unknown, info: WeekInfo): WeekInfo =>
+        String(locale) === defaultTag ? { ...info, firstDay: day } : info;
+
+      const getWeekInfo = proto.getWeekInfo;
+      if (getWeekInfo) {
+        proto.getWeekInfo = function (this: WeekInfoLocale) {
+          return adjust(this, getWeekInfo.call(this));
+        };
+      }
+      const getter = Object.getOwnPropertyDescriptor(proto, "weekInfo")?.get;
+      if (getter) {
+        Object.defineProperty(proto, "weekInfo", {
+          get(this: WeekInfoLocale) {
+            return adjust(this, getter.call(this));
+          },
+          configurable: true,
+        });
+      }
+    },
+    args: [firstDay],
+  });
+})();
