@@ -725,6 +725,14 @@ function logNotificationPayloadForDebug(data: unknown): void {
   }
 }
 
+/** How long a popup stays up unless dismissed. Long enough to be seen, short enough not to pile up. */
+const NOTIFICATION_DISPLAY_MS = 10 * 60_000;
+/**
+ * Killing a waiting `notify-send` closes its popup, buttons included, so this must outlast the
+ * display time. The margin covers Plasma pausing the countdown while the pointer is over the popup.
+ */
+const NOTIFY_SEND_WAIT_TIMEOUT_MS = NOTIFICATION_DISPLAY_MS + 5 * 60_000;
+
 /** Shared notify-send flags. Plasma 6.4+ keeps action notifications resident unless marked transient. */
 function buildNotifySendBaseArgs(): string[] {
   return [
@@ -732,7 +740,7 @@ function buildNotifySendBaseArgs(): string[] {
     `--icon=${getAppIconPath()}`,
     "--urgency=normal",
     "--transient",
-    "--expire-time=-1",
+    `--expire-time=${NOTIFICATION_DISPLAY_MS}`,
     "--hint=string:desktop-entry:notion-calendar",
   ];
 }
@@ -746,11 +754,11 @@ function notifySendMinimal(title: string, body: string): void {
 }
 
 /**
- * `--wait` keeps a notify-send process alive until the user dismisses the notification (up to
- * the 2-minute timeout below). The page can call showNotification in a loop, so cap how many
+ * `--wait` keeps a notify-send process alive until the notification is dismissed or expires
+ * (see the timeouts above). The page can call showNotification in a loop, so cap how many
  * of those can be outstanding; past the cap fall back to the fire-and-forget form.
  */
-const MAX_CONCURRENT_WAITING_NOTIFY_SEND = 8;
+const MAX_CONCURRENT_WAITING_NOTIFY_SEND = 16;
 let waitingNotifySendCount = 0;
 
 /** Notion's service worker re-fires the same reminder on reconnect; drop exact repeats. */
@@ -805,16 +813,18 @@ function dispatchNativeNotification(data: unknown): void {
   args.push("--", title, body);
 
   waitingNotifySendCount += 1;
-  const child = execFile("notify-send", args, { timeout: 120_000 }, (err, stdout) => {
+  const child = execFile("notify-send", args, { timeout: NOTIFY_SEND_WAIT_TIMEOUT_MS }, (err, stdout) => {
     waitingNotifySendCount -= 1;
     if (err) {
       // `err.message` embeds the full command line (title, body), so log only the code.
-      // Hitting the 120 s timeout means we never heard the notification close - not that
-      // notify-send failed - so re-posting would duplicate it. Ubuntu's notify-send AppArmor
-      // profile blocks the close signal, so here every reminder ran into it; the timeout SIGTERM
+      // A timeout or a signal means the wait was cut short - not that notify-send failed to
+      // post - so re-posting would duplicate it. Ubuntu's notify-send AppArmor profile blocks
+      // the close signal, so there every reminder runs into the timeout; the timeout SIGTERM
       // is denied too, which surfaces as `kill EACCES` (`killed` unset, child still alive).
-      if (err.killed || (err as NodeJS.ErrnoException).syscall === "kill") {
-        console.warn("[NotionCalendar] notify-send --wait timed out:", err.code ?? err.signal);
+      // A crash signal (SIGSEGV, SIGABRT) may mean nothing was posted, so that still falls back.
+      const stopped = ["SIGTERM", "SIGINT", "SIGHUP", "SIGKILL"].includes(err.signal ?? "");
+      if (err.killed || stopped || (err as NodeJS.ErrnoException).syscall === "kill") {
+        console.warn("[NotionCalendar] notify-send --wait cut short:", err.code ?? err.signal);
         return;
       }
       console.error("[NotionCalendar] notify-send failed:", err.code);
